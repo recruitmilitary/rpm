@@ -23,9 +23,9 @@ class NewRelic::Control::Rails < NewRelic::Control
     if !agent_enabled?
       # Might not be running if it does not think mongrel, thin, passenger, etc
       # is running, if it things it's a rake task, or if the agent_enabled is false.
-      RAILS_DEFAULT_LOGGER.info "New Relic Agent not running."
+      ::RAILS_DEFAULT_LOGGER.info "New Relic Agent not running."
     else
-      RAILS_DEFAULT_LOGGER.info "Starting the New Relic Agent."
+      ::RAILS_DEFAULT_LOGGER.info "Starting the New Relic Agent."
       install_developer_mode rails_config if developer_mode?
     end
   end
@@ -62,6 +62,12 @@ class NewRelic::Control::Rails < NewRelic::Control
       current_paths << controller_path
     end
     
+    def to_stdout(message)
+      ::RAILS_DEFAULT_LOGGER.info(message)
+    rescue Exception => e
+      STDOUT.puts(message)
+    end
+        
     #ActionController::Routing::Routes.reload! unless NewRelic::Control.instance['skip_developer_route']
     
     # inform user that the dev edition is available if we are running inside

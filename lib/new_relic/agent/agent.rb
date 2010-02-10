@@ -17,7 +17,7 @@ module NewRelic::Agent
     # Specifies the version of the agent's communication protocol with
     # the NewRelic hosted site.
     
-    PROTOCOL_VERSION = 6
+    PROTOCOL_VERSION = 8
     
     attr_reader :obfuscator
     attr_reader :stats_engine
@@ -26,6 +26,8 @@ module NewRelic::Agent
     attr_reader :task_loop
     attr_reader :record_sql
     attr_reader :histogram
+    attr_reader :metric_ids
+    attr_reader :should_send_errors
     
     # Should only be called by NewRelic::Control
     def self.instance
@@ -43,7 +45,8 @@ module NewRelic::Agent
     def ensure_worker_thread_started
       return unless control.agent_enabled? && control.monitor_mode? && !@invalid_license
       if !running?
-        log.info "Detected that the worker loop is not running.  Restarting."
+        # We got some reports of threading errors in Unicorn with this.
+        log.debug "Detected that the worker loop is not running.  Restarting." rescue nil
         # Assume we've been forked, clear out stats that are left over from parent process
         reset_stats
         launch_worker_thread
@@ -89,12 +92,10 @@ module NewRelic::Agent
     end
     
     def start_transaction
-      Thread::current[:custom_params] = nil
       @stats_engine.start_transaction
     end
     
     def end_transaction
-      Thread::current[:custom_params] = nil
       @stats_engine.end_transaction
     end
     
@@ -119,16 +120,6 @@ module NewRelic::Agent
     # to what it was before we pushed the current flag.
     def pop_trace_execution_flag
       Thread.current[:newrelic_untraced].pop if Thread.current[:newrelic_untraced]
-    end
-    
-    def add_custom_parameters(params)
-      p = Thread::current[:custom_params] || (Thread::current[:custom_params] = {})
-      
-      p.merge!(params)
-    end
-    
-    def custom_params
-      Thread::current[:custom_params] || {}
     end
     
     def set_sql_obfuscator(type, &block)
@@ -160,7 +151,12 @@ module NewRelic::Agent
 
       @local_host = determine_host
       
-      log.info "Web container: #{control.dispatcher.to_s}"
+      if control.dispatcher.nil? || control.dispatcher.to_s.empty?
+        log.info "No dispatcher detected."
+      else
+        log.info "Dispatcher: #{control.dispatcher.to_s}"
+      end
+      log.info "Application: #{control.app_names.join(", ")}" unless control.app_names.empty?
       
       @started = true
       
@@ -245,10 +241,10 @@ module NewRelic::Agent
           harvest_and_send_errors
         end
       end
-      log.debug("Running worker loop")
+      log.debug "Running worker loop"
       @task_loop.run
     rescue StandardError
-      log.debug("Error in worker loop: #{$!}")
+      log.debug "Error in worker loop: #{$!}"
       @connected = false
       raise
     end
@@ -261,15 +257,9 @@ module NewRelic::Agent
       
       @task_loop = WorkerLoop.new(log)
       
-      if control['check_bg_loading']
-        log.warn "Agent background loading checking turned on"
-        require 'new_relic/agent/patch_const_missing'
-        ClassLoadingWatcher.enable_warning
-      end
       log.debug "Creating RPM worker thread."
       @worker_thread = Thread.new do
         begin
-          ClassLoadingWatcher.background_thread=Thread.current if control['check_bg_loading']
           NewRelic::Agent.disable_all_tracing do
             connect
             run_task_loop if @connected
@@ -307,7 +297,7 @@ module NewRelic::Agent
       @stats_engine = NewRelic::Agent::StatsEngine.new
       @transaction_sampler = NewRelic::Agent::TransactionSampler.new
       @stats_engine.transaction_sampler = @transaction_sampler
-      @error_collector = NewRelic::Agent::ErrorCollector.new(self)
+      @error_collector = NewRelic::Agent::ErrorCollector.new
       
       @request_timeout = NewRelic::Control.instance.fetch('timeout', 2 * 60)
       
@@ -421,6 +411,7 @@ module NewRelic::Agent
       @unsent_timeslice_data = @stats_engine.harvest_timeslice_data(@unsent_timeslice_data, @metric_ids)
       
       begin
+        # In this version of the protocol, we get back an assoc array of spec to id.
         metric_ids = invoke_remote(:metric_data, @agent_id, 
                                    @last_harvest_time.to_f, 
                                    now.to_f, 
@@ -431,7 +422,9 @@ module NewRelic::Agent
         metric_ids = nil
       end
       
-      @metric_ids.merge! metric_ids if metric_ids
+      metric_ids.each do | spec, id |
+        @metric_ids[spec] = id
+      end if metric_ids 
       
       log.debug "#{now}: sent #{@unsent_timeslice_data.length} timeslices (#{@agent_id}) in #{Time.now - now} seconds"
       
@@ -466,7 +459,7 @@ module NewRelic::Agent
           retry if @traces.shift
         end
         
-        log.debug "#{now}: sent slowest sample (#{@agent_id}) in #{Time.now - now} seconds"
+        log.debug "Sent slowest sample (#{@agent_id}) in #{Time.now - now} seconds"
       end
       
       # if we succeed sending this sample, then we don't need to keep
@@ -534,7 +527,7 @@ module NewRelic::Agent
       request.content_type = "application/octet-stream"
       request.body = opts[:data]
       
-      log.debug "connect to #{opts[:collector]}#{opts[:uri]}"
+      log.debug "Connect to #{opts[:collector]}#{opts[:uri]}"
       
       response = nil
       http = control.http_connection(collector)      
@@ -609,13 +602,16 @@ module NewRelic::Agent
     end
     
     def graceful_disconnect
-      if @connected && !(control.server.name == "localhost" && control.dispatcher_instance_id == '3000')
+      if @connected
         begin
           log.debug "Sending graceful shutdown message to #{control.server}"
           
-          @request_timeout = 10
+          @request_timeout = 5
           
           log.debug "Sending RPM service agent run shutdown message"
+          harvest_and_send_timeslice_data
+#          harvest_and_send_slowest_sample
+          harvest_and_send_errors
           invoke_remote :shutdown, @agent_id, Time.now.to_f
           
           log.debug "Graceful shutdown complete"

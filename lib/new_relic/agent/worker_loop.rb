@@ -59,7 +59,6 @@ module NewRelic::Agent
       # next invocation time.
       task = next_task
       
-      # sleep in chunks no longer than 1 second
       while Time.now < task.next_invocation_time
         
         # sleep until this next task's scheduled invocation time
@@ -69,7 +68,7 @@ module NewRelic::Agent
       end
       
       begin
-        task.execute
+        task.execute if keep_running
       rescue ServerError => e
         log.debug "Server Error: #{e}"
       rescue NewRelic::Agent::ForceRestartException => e
@@ -89,7 +88,7 @@ module NewRelic::Agent
       rescue Timeout::Error, NewRelic::Agent::IgnoreSilentlyException
         # Want to ignore these because they are handled already
       rescue ScriptError, StandardError => e 
-        log.error "Error running task in Agent Worker Loop (#{e.class}): #{e} " 
+        log.error "Error running task in Agent Worker Loop '#{e}': #{e.backtrace.first}" 
         log.debug e.backtrace.join("\n")
       end
     end

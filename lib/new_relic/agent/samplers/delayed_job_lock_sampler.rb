@@ -20,6 +20,10 @@ module NewRelic::Agent::Samplers
       Delayed::Job.count(:conditions => {:locked_by => worker_name})
     end
     
+    def self.supported_on_this_platform?
+      defined?(Delayed::Job)
+    end
+    
     def poll
       stats.record_data_point locked_jobs
     end

@@ -185,17 +185,9 @@ module NewRelic::Agent::Instrumentation
     #     newrelic_ignore :only => 'invoke_operation'
     #   end
     #
-    # By passing a block in combination with specific arguments, you can 
-    # invoke this directly to capture high level information in
-    # several contexts:
     #
-    # * Pass <tt>:category => :controller</tt> and <tt>:name => actionname</tt>
-    #   to treat the block as if it were a controller action, invoked
-    #   inside a real action.  <tt>:name</tt> is the name of the method, and is
-    #   used in the metric name.
-    #
-    # When invoked directly, pass in a block to measure with some
-    # combination of options:
+    # When invoking this method explicitly as in the example above, pass in a 
+    # block to measure with some combination of options:
     #
     # * <tt>:category => :controller</tt> indicates that this is a
     #   controller action and will appear with all the other actions.  This
@@ -210,11 +202,14 @@ module NewRelic::Agent::Instrumentation
     #   web transaction whose name is a normalized URI, where  'normalized'
     #   means the URI does not have any elements with data in them such
     #   as in many REST URIs.
+    # * <tt>:name => action_name</tt> is used to specify the action
+    #   name used as part of the metric name
     # * <tt>:params => {...}</tt> to provide information about the context
     #   of the call, used in transaction trace display, for example:
     #   <tt>:params => { :account => @account.name, :file => file.name }</tt>
-    # * <tt>:name => action_name</tt> is used to specify the action
-    #   name used as part of the metric name
+    #
+    # Seldomly used options:
+    #
     # * <tt>:force => true</tt> indicates you should capture all
     #   metrics even if the #newrelic_ignore directive was specified
     # * <tt>:class_name => aClass.name</tt> is used to override the name
@@ -242,37 +237,45 @@ module NewRelic::Agent::Instrumentation
       return perform_action_with_newrelic_profile(args, &block) if NewRelic::Control.instance.profiling?
       
       frame_data = _push_metric_frame(block_given? ? args : [])
-      
-      NewRelic::Agent.trace_execution_scoped frame_data.recorded_metrics, :force => frame_data.force_flag do
-        frame_data.start_transaction
-        begin
-          NewRelic::Agent::BusyCalculator.dispatcher_start frame_data.start
-          if block_given?
-            yield
-          else
-            perform_action_without_newrelic_trace(*args)
+      begin      
+        NewRelic::Agent.trace_execution_scoped frame_data.recorded_metrics, :force => frame_data.force_flag do
+          frame_data.start_transaction
+          begin
+            NewRelic::Agent::BusyCalculator.dispatcher_start frame_data.start
+            if block_given?
+              yield
+            else
+              perform_action_without_newrelic_trace(*args)
+            end
+          rescue Exception => e
+            frame_data.notice_error(e)
+            raise
           end
-        rescue Exception => e
-          if frame_data.exception != e
-            NewRelic::Agent.instance.error_collector.notice_error(e, nil, frame_data.metric_name, frame_data.filtered_params)
-            frame_data.exception = e
-          end
-          raise
-        ensure
-          NewRelic::Agent::BusyCalculator.dispatcher_finish
-          # Look for a metric frame in the thread local and process it.
-          # Clear the thread local when finished to ensure it only gets called once.
-          frame_data.record_apdex unless _is_filtered?('ignore_apdex')
-          frame_data.pop
         end
+      ensure
+        NewRelic::Agent::BusyCalculator.dispatcher_finish
+        # Look for a metric frame in the thread local and process it.
+        # Clear the thread local when finished to ensure it only gets called once.
+        frame_data.record_apdex unless _is_filtered?('ignore_apdex')
+        frame_data.pop
       end
     end
+
+    protected
+    # Should be implemented in the dispatcher class
+    def newrelic_response_code; end
     
-    # Experimental
+    def newrelic_request_headers
+      self.respond_to?(:request) && self.request.respond_to?(:headers) && self.request.headers
+    end
+    
+    private
+    
+    # Profile the instrumented call.  Dev mode only.  Experimental. 
     def perform_action_with_newrelic_profile(args)
       frame_data = _push_metric_frame(block_given? ? args : [])
       NewRelic::Agent.trace_execution_scoped frame_data.metric_name do
-        MetricFrame.current.start_transaction
+        MetricFrame.current(true).start_transaction
         NewRelic::Agent.disable_all_tracing do
           # turn on profiling
           profile = RubyProf.profile do
@@ -292,7 +295,7 @@ module NewRelic::Agent::Instrumentation
     # Write a metric frame onto a thread local if there isn't already one there.
     # If there is one, just update it.
     def _push_metric_frame(args) # :nodoc:
-      frame_data = MetricFrame.current
+      frame_data = MetricFrame.current(true)
       
       frame_data.apdex_start ||= _detect_upstream_wait(frame_data.start)
       
@@ -311,28 +314,22 @@ module NewRelic::Agent::Instrumentation
       frame_data.available_request ||= (respond_to? :request) ? request : nil
       frame_data
     end
-    
-    protected
-    
+        
     def _convert_args_to_path(args)
       options =  args.last.is_a?(Hash) ? args.pop : {}
-      category = 'Controller'
       params = options[:params] || {}
-      unless path = options[:path]
-        category = case options[:category]
+      category = case options[:category]
         when :controller, nil then 'Controller'
-        when :task then 'Controller' #'OtherTransaction/Background' # 'Task'
+        when :task then 'OtherTransaction/Background' # 'Task'
         when :rack then 'Controller/Rack' #'WebTransaction/Rack'
         when :uri then 'Controller' #'WebTransaction/Uri'
         when :sinatra then 'Controller/Sinatra' #'WebTransaction/Uri'
         # for internal use only
         else options[:category].to_s
-        end
-        # To be consistent with the ActionController::Base#controller_path used in rails to determine the
-        # metric path, we drop the controller off the end of the path if there is one.
+      end
+      unless path = options[:path]
         action = options[:name] || args.first 
         metric_class = options[:class_name] || (self.is_a?(Class) ? self.name : self.class.name)
-        
         path = metric_class
         path += ('/' + action) if action
       end
@@ -355,29 +352,35 @@ module NewRelic::Agent::Instrumentation
     
     def _detect_upstream_wait(now)
       if newrelic_request_headers
-        entry_time = newrelic_request_headers['HTTP_X_REQUEST_START'] and
-        entry_time = entry_time[/t=(\d+)/, 1 ] and 
-        http_entry_time = entry_time.to_f/1e6
+        if entry_time = newrelic_request_headers['HTTP_X_REQUEST_START']
+          if queue_depth = newrelic_request_headers['HTTP_X_HEROKU_QUEUE_DEPTH']
+            http_entry_time = entry_time.to_f / 1e3
+            _record_heroku_queue_depth(queue_depth)
+          else # apache / nginx
+            apache_parsed_time = entry_time[/t=(\d+)/, 1]
+            http_entry_time = apache_parsed_time.to_f/1e6 if apache_parsed_time
+          end
+        end
       end
       # If we didn't find the custom header, look for the mongrel timestamp
       http_entry_time ||= Thread.current[:started_on] and http_entry_time = http_entry_time.to_f
       if http_entry_time
-        queue_stat = NewRelic::Agent.agent.stats_engine.get_stats_no_scope 'WebFrontend/Mongrel/Average Queue Time'  
-        queue_stat.trace_call(now - http_entry_time)
+        queue_stat = NewRelic::Agent.agent.stats_engine.get_stats_no_scope 'WebFrontend/Mongrel/Average Queue Time'
+        total_time = (now - http_entry_time)
+        queue_stat.trace_call(total_time) unless total_time < 0 # using remote timestamps could lead to negative queue time
       end
       http_entry_time || now
+    end
+
+    def _record_heroku_queue_depth(header)
+      length_stat = NewRelic::Agent.agent.stats_engine.get_stats_no_scope('Mongrel/Queue Length')
+      length_stat.trace_call(header.to_i)
     end
     
     def _dispatch_stat
       NewRelic::Agent.agent.stats_engine.get_stats_no_scope 'HttpDispatcher'  
     end
     
-    # Should be implemented in the dispatcher class
-    def newrelic_response_code; end
-    
-    def newrelic_request_headers
-      self.respond_to?(:request) && self.request.respond_to?(:headers) && self.request.headers
-    end
     
   end 
 end  

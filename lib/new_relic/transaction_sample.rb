@@ -107,42 +107,28 @@ module NewRelic
         str
       end
       def to_debug_str(depth)
-        tab = "" 
-        depth.times {tab << "  "}
-        
+        tab = "  " * depth 
         s = tab.clone
-        s << ">> #{metric_name}: #{(@entry_timestamp*1000).round}\n"
+        s << ">> #{'%3i ms' % (@entry_timestamp*1000)} [#{self.class.name.split("::").last}] #{metric_name} \n"
         unless params.empty?
-          s << "#{tab}#{tab}{\n"
           params.each do |k,v|
-            s << "#{tab}#{tab}#{k}: #{v}\n"
+            s << "#{tab}    -#{'%-16s' % k}: #{v.to_s[0..80]}\n"
           end
-          s << "#{tab}#{tab}}\n"
         end
         called_segments.each do |cs|
           s << cs.to_debug_str(depth + 1)
         end
-        s << tab
-        s << "<< #{metric_name}: "
+        s << tab + "<< "
         s << case @exit_timestamp
-          when nil then 'n/a'
-          when Numeric then (@exit_timestamp*1000).round.to_s
+          when nil then ' n/a'
+          when Numeric then '%3i ms' % (@exit_timestamp*1000)
           else @exit_timestamp.to_s
-        end << "\n"
+        end
+        s << " #{metric_name}\n"
       end
       
       def called_segments
         @called_segments || EMPTY_ARRAY
-      end
-      
-      def freeze
-        params.freeze
-        if @called_segments
-          @called_segments.each do |s|
-            s.freeze
-          end
-        end
-        super
       end
       
       # return the total duration of this segment
@@ -288,7 +274,6 @@ module NewRelic
     end
 
     class FakeSegment < Segment
-
       public :parent_segment=
     end
 
@@ -403,7 +388,8 @@ module NewRelic
       @start_time - @@start_time.to_f
     end
     
-    def to_json(options = {})
+    # Used in the server only
+    def to_json(options = {}) #:nodoc:
       map = {:sample_id => @sample_id,
         :start_time => @start_time,
         :root_segment => @root_segment}
@@ -413,7 +399,8 @@ module NewRelic
       map.to_json
     end
     
-    def self.from_json(json)
+    # Used in the Server only
+    def self.from_json(json) #:nodoc:
       json = ActiveSupport::JSON.decode(json) if json.is_a?(String)
       
       if json.is_a?(Array)
@@ -454,11 +441,6 @@ module NewRelic
     def create_segment(relative_timestamp, metric_name, segment_id = nil)
       raise TypeError.new("Frozen Transaction Sample") if frozen?
       NewRelic::TransactionSample::Segment.new(relative_timestamp, metric_name, segment_id)    
-    end
-    
-    def freeze
-      @root_segment.freeze
-      super
     end
     
     def duration
@@ -512,7 +494,7 @@ module NewRelic
       delta = build_segment_with_omissions(sample, 0.0, @root_segment, sample.root_segment, regex)
       sample.root_segment.end_trace(@root_segment.exit_timestamp - delta)
       sample.profile = self.profile
-      sample.freeze
+      sample
     end
     
     # return a new transaction sample that can be sent to the RPM service.
@@ -533,7 +515,7 @@ module NewRelic
       end
       
       sample.root_segment.end_trace(@root_segment.exit_timestamp) 
-      sample.freeze
+      sample
     end
     
     def analyze

@@ -62,14 +62,14 @@ class TaskInstrumentationTest < Test::Unit::TestCase
   def test_reentrancy
     assert_equal 0, NewRelic::Agent::BusyCalculator.busy_count
     run_task_inner(1)
+    assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller/TaskInstrumentationTest/inner_task_0').call_count
+    assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller/TaskInstrumentationTest/inner_task_1').call_count
     compare_metrics %w[
       Controller
       Controller/TaskInstrumentationTest/inner_task_0:Controller/TaskInstrumentationTest/inner_task_1
       Controller/TaskInstrumentationTest/inner_task_0
       Controller/TaskInstrumentationTest/inner_task_1
       ], @agent.stats_engine.metrics.grep(/^Controller/)
-    assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller/TaskInstrumentationTest/inner_task_0').call_count
-    assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller/TaskInstrumentationTest/inner_task_1').call_count
   end
   
   def test_transaction
@@ -77,6 +77,7 @@ class TaskInstrumentationTest < Test::Unit::TestCase
     assert_nil @agent.transaction_sampler.last_sample
     assert_equal @agent.transaction_sampler, @agent.stats_engine.instance_variable_get("@transaction_sampler")
     run_task_outer(10)
+    assert_equal 0, @agent.transaction_sampler.scope_depth, "existing unfinished sample"
     @agent.stats_engine.metrics.sort.each do |n|
       stat = @agent.stats_engine.get_stats_no_scope(n)
       #      puts "#{'%-26s' % n}: #{stat.call_count} calls @ #{stat.average_call_time} sec/call"
@@ -90,6 +91,17 @@ class TaskInstrumentationTest < Test::Unit::TestCase
     assert_not_nil sample.params[:cpu_time], "cpu time nil: \n#{sample}"
     assert sample.params[:cpu_time] >= 0, "cpu time: #{sample.params[:cpu_time]},\n#{sample}"
     assert_equal '10', sample.params[:request_params][:level]
+  end
+  
+  def test_abort
+    @acct = 'Redrocks'
+    perform_action_with_newrelic_trace(:name => 'hello', :force => true, :params => { :account => @acct}) do
+      RAILS_DEFAULT_LOGGER.info "Hello world"
+      NewRelic::Agent.abort_transaction!
+    end
+    # We record the controller metric still, but abort any transaction recording.
+    assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller/TaskInstrumentationTest/hello').call_count
+    assert_nil @agent.transaction_sampler.last_sample
   end
   
   def test_block
@@ -113,11 +125,11 @@ class TaskInstrumentationTest < Test::Unit::TestCase
   def test_error_handling
     @agent.error_collector.ignore_error_filter
     @agent.error_collector.harvest_errors([])
+    @agent.error_collector.expects(:notice_error).once
+    assert_equal @agent.error_collector, NewRelic::Agent.instance.error_collector
     assert_raise RuntimeError do
       run_task_exception
     end
-    errors = @agent.error_collector.harvest_errors([])
-    assert_equal 1, errors.size
   end
   
   def test_instrument_bg
