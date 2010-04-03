@@ -19,14 +19,14 @@ class TaskInstrumentationTest < Test::Unit::TestCase
   def test_run
     run_task_inner 0
     stat_names = %w[Controller/TaskInstrumentationTest/inner_task_0
-                    Controller HttpDispatcher
+                    HttpDispatcher
                     Apdex Apdex/TaskInstrumentationTest/inner_task_0].sort
     expected_but_missing = stat_names - @agent.stats_engine.metrics
     assert_equal 0, expected_but_missing.size, @agent.stats_engine.metrics.map  { |n|
       stat = @agent.stats_engine.get_stats_no_scope(n)
       "#{'%-26s' % n}: #{stat.call_count} calls @ #{stat.average_call_time} sec/call"
     }.join("\n  ") + "\nmissing: #{expected_but_missing.inspect}"
-    assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller').call_count
+    assert_equal 0, @agent.stats_engine.get_stats_no_scope('Controller').call_count
     assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller/TaskInstrumentationTest/inner_task_0').call_count
   end
   
@@ -45,7 +45,7 @@ class TaskInstrumentationTest < Test::Unit::TestCase
     assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller/TaskInstrumentationTest/inner_task_1').call_count
     assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller/TaskInstrumentationTest/inner_task_2').call_count
     assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller/TaskInstrumentationTest/inner_task_3').call_count
-    assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller').call_count
+    assert_equal 0, @agent.stats_engine.get_stats_no_scope('Controller').call_count
   end
   
   def test_run_nested
@@ -56,7 +56,6 @@ class TaskInstrumentationTest < Test::Unit::TestCase
     end
     assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller/TaskInstrumentationTest/outer_task').call_count
     assert_equal 2, @agent.stats_engine.get_stats_no_scope('Controller/TaskInstrumentationTest/inner_task_0').call_count
-    assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller').call_count
   end
   
   def test_reentrancy
@@ -65,7 +64,6 @@ class TaskInstrumentationTest < Test::Unit::TestCase
     assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller/TaskInstrumentationTest/inner_task_0').call_count
     assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller/TaskInstrumentationTest/inner_task_1').call_count
     compare_metrics %w[
-      Controller
       Controller/TaskInstrumentationTest/inner_task_0:Controller/TaskInstrumentationTest/inner_task_1
       Controller/TaskInstrumentationTest/inner_task_0
       Controller/TaskInstrumentationTest/inner_task_1
@@ -83,7 +81,7 @@ class TaskInstrumentationTest < Test::Unit::TestCase
       #      puts "#{'%-26s' % n}: #{stat.call_count} calls @ #{stat.average_call_time} sec/call"
     end
     assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller/TaskInstrumentationTest/outer_task').call_count
-    assert_equal 1, @agent.stats_engine.get_stats_no_scope('Controller').call_count
+    assert_equal 0, @agent.stats_engine.get_stats_no_scope('Controller').call_count
     assert_equal 2, @agent.stats_engine.get_stats_no_scope('Controller/TaskInstrumentationTest/inner_task_0').call_count
     assert_equal 0, @agent.transaction_sampler.scope_depth, "existing unfinished sample"
     sample = @agent.transaction_sampler.last_sample
@@ -132,6 +130,22 @@ class TaskInstrumentationTest < Test::Unit::TestCase
     end
   end
   
+  def test_custom_params
+    @agent.error_collector.stubs(:enabled).returns(true)
+    @agent.error_collector.ignore_error_filter
+    @agent.error_collector.harvest_errors([])
+    assert_equal @agent.error_collector, NewRelic::Agent.instance.error_collector
+    assert_raise RuntimeError do
+      run_task_exception
+    end
+    errors = @agent.error_collector.harvest_errors([])
+    assert_equal 1, errors.size
+    error = errors.first
+    assert_equal "Controller/TaskInstrumentationTest/run_task_exception", error.path
+    assert_not_nil error.params[:stack_trace]
+    assert_not_nil error.params[:custom_params]
+  end
+  
   def test_instrument_bg
     run_background_job
     stat_names = %w[OtherTransaction/Background/TaskInstrumentationTest/run_background_job
@@ -162,6 +176,7 @@ class TaskInstrumentationTest < Test::Unit::TestCase
   end
   
   def run_task_exception
+    NewRelic::Agent.add_custom_parameters(:custom_one => 'one custom val')
     assert_equal 1, NewRelic::Agent::BusyCalculator.busy_count
     raise "This is an error"
   end

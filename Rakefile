@@ -30,9 +30,22 @@ http://github.com/newrelic/rpm/tree/master.
     gem.version = GEM_VERSION
     gem.files = FileList['**/*'].to_a - ['init.rb']
     gem.test_files = [] # You can't really run the tests unless the gem is installed.
-    gem.rdoc_options << "--line-numbers" << "--inline-source" << "--title" << "New Relic RPM" << "README.md"
-    gem.files.reject! { |fn| fn =~ /Rakefile|pkg\// }
-    gem.post_install_message = File.read(URGENT_README) if File.exists?(URGENT_README) 
+    gem.rdoc_options << "--line-numbers" << "--inline-source" << "--title" << "New Relic RPM"
+    gem.files.reject! { |fn| fn =~ /Rakefile|pkg\/|rdoc\// }
+    gem.extra_rdoc_files = %w[CHANGELOG LICENSE]
+    if File.exists?(URGENT_README)
+      gem.post_install_message = File.read(URGENT_README)
+    else
+      gem.post_install_message = <<-EOF
+
+Please see http://support.newrelic.com/faqs/docs/ruby-agent-release-notes
+for a complete description of the features and enhancements available
+in version #{GEM_VERSION.split('.')[0..1].join('.')} of the Ruby Agent.
+
+For details on this specific release, refer to the CHANGELOG file.
+
+      EOF
+    end
   end
   Jeweler::GemcutterTasks.new
 rescue LoadError
@@ -68,6 +81,7 @@ require 'rake/rdoctask'
 Rake::RDocTask.new do |rdoc|
   rdoc.rdoc_dir = 'rdoc'
   rdoc.title = SUMMARY
-  rdoc.rdoc_files.include('README*')
+  rdoc.rdoc_files.include('LICENSE')
+  rdoc.rdoc_files.include('CHANGELOG')
   rdoc.rdoc_files.include('lib/**/*.rb')
 end

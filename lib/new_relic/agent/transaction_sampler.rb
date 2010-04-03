@@ -1,5 +1,5 @@
-
-module NewRelic::Agent
+module NewRelic
+module Agent
   
   class TransactionSampler
     
@@ -109,8 +109,8 @@ module NewRelic::Agent
       end
     end
     
-    def notice_transaction(path, request=nil, params={})
-      builder.set_transaction_info(path, request, params) if !disabled && builder
+    def notice_transaction(path, uri=nil, params={})
+      builder.set_transaction_info(path, uri, params) if !disabled && builder
     end
     
     def ignore_transaction
@@ -223,7 +223,7 @@ module NewRelic::Agent
   class TransactionSampleBuilder
     attr_reader :current_segment, :sample
     
-    include CollectionHelper
+    include NewRelic::CollectionHelper
     
     def initialize(time=nil)
       time ||= Time.now.to_f
@@ -289,7 +289,7 @@ module NewRelic::Agent
       @sample.profile = profile
     end
     
-    def set_transaction_info(path, request, params)
+    def set_transaction_info(path, uri, params)
       @sample.params[:path] = path
       
       if NewRelic::Control.instance.capture_params
@@ -299,8 +299,7 @@ module NewRelic::Agent
         @sample.params[:request_params].delete :controller
         @sample.params[:request_params].delete :action
       end
-      uri = params[:uri] || (request && request.path)
-      @sample.params[:uri] ||= uri if uri
+      @sample.params[:uri] ||= uri || params[:uri] 
     end
     
     def set_transaction_cpu_time(cpu_time)
@@ -312,4 +311,5 @@ module NewRelic::Agent
     end
     
   end
+end
 end

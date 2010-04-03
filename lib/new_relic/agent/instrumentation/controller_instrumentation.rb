@@ -1,14 +1,18 @@
-
-module NewRelic::Agent::Instrumentation
-  # == NewRelic instrumentation for controllers
+require 'new_relic/agent/instrumentation/metric_frame'
+module NewRelic
+  module Agent
+    module Instrumentation
+  # == NewRelic instrumentation for controller actions and tasks
   #
-  # This instrumentation is applied to the action controller by default if the agent
-  # is actively collecting statistics.  It will collect statistics for the 
-  # given action.
+  # This instrumentation is applied to the action controller to collect
+  # metrics for every web request.
   #
-  # In cases where you don't want to instrument the top level action, but instead
-  # have other methods which are dispatched to by your action, and you want to treat
-  # these as distinct actions, then what you need to do is use
+  # It can also be used to capture performance information for 
+  # background tasks and other non-web transactions, including
+  # detailed transaction traces and traced errors.
+  #
+  # For details on how to instrument background tasks see
+  # ClassMethods#add_transaction_tracer and
   # #perform_action_with_newrelic_trace
   #
   module ControllerInstrumentation
@@ -207,6 +211,7 @@ module NewRelic::Agent::Instrumentation
     # * <tt>:params => {...}</tt> to provide information about the context
     #   of the call, used in transaction trace display, for example:
     #   <tt>:params => { :account => @account.name, :file => file.name }</tt>
+    #   These are treated similarly to request parameters in web transactions.
     #
     # Seldomly used options:
     #
@@ -218,12 +223,12 @@ module NewRelic::Agent::Instrumentation
     # * <tt>:path => metric_path</tt> is *deprecated* in the public API.  It
     #   allows you to set the entire metric after the category part.  Overrides
     #   all the other options.
+    # * <tt>:request => Rack::Request#new(env)</tt> is used to pass in a 
+    #   request object that may respond to uri and referer.
     #
     # If a single argument is passed in, it is treated as a metric
     # path.  This form is deprecated.
     def perform_action_with_newrelic_trace(*args, &block)
-      
-      NewRelic::Agent.instance.ensure_worker_thread_started
       
       # Skip instrumentation based on the value of 'do_not_trace' and if 
       # we aren't calling directly with a block.
@@ -295,23 +300,26 @@ module NewRelic::Agent::Instrumentation
     # Write a metric frame onto a thread local if there isn't already one there.
     # If there is one, just update it.
     def _push_metric_frame(args) # :nodoc:
-      frame_data = MetricFrame.current(true)
+      frame_data = NewRelic::Agent::Instrumentation::MetricFrame.current(true)
       
       frame_data.apdex_start ||= _detect_upstream_wait(frame_data.start)
-      
+      _record_queue_length 
       # If a block was passed in, then the arguments represent options for the instrumentation,
       # not app method arguments.
       if args.any?
-        frame_data.force_flag = args.last.is_a?(Hash) && args.last[:force]
+        if options = args.last.is_a?(Hash) && args.last
+          frame_data.force_flag = options[:force] 
+          frame_data.request = options[:request] if options[:request]
+        end
         category, path, available_params = _convert_args_to_path(args)
       else
         category = 'Controller'
         path = newrelic_metric_path
-        available_params = self.respond_to?(:params) ? self.params : {} 
+        available_params = self.respond_to?(:params) ? self.params : {}
       end
+      frame_data.request ||= self.request if self.respond_to? :request
       frame_data.push(category, path)
       frame_data.filtered_params = (respond_to? :filter_parameters) ? filter_parameters(available_params) : available_params
-      frame_data.available_request ||= (respond_to? :request) ? request : nil
       frame_data
     end
         
@@ -349,13 +357,25 @@ module NewRelic::Agent::Instrumentation
         true
       end
     end
+    # Take a guess at a measure representing the number of requests waiting in mongrel
+    # or heroku.
+    def _record_queue_length
+      if newrelic_request_headers
+        if queue_depth = newrelic_request_headers['HTTP_X_HEROKU_QUEUE_DEPTH']
+          queue_depth = queue_depth.to_i rescue nil
+        elsif mongrel = NewRelic::Control.instance.local_env.mongrel
+          # Always subtrace 1 for the active mongrel
+          queue_depth = [mongrel.workers.list.length.to_i - 1, 0].max rescue nil
+        end
+        NewRelic::Agent.agent.stats_engine.get_stats_no_scope('Mongrel/Queue Length').trace_call(queue_depth) if queue_depth
+      end
+    end
     
     def _detect_upstream_wait(now)
       if newrelic_request_headers
         if entry_time = newrelic_request_headers['HTTP_X_REQUEST_START']
-          if queue_depth = newrelic_request_headers['HTTP_X_HEROKU_QUEUE_DEPTH']
+          if newrelic_request_headers['HTTP_X_HEROKU_QUEUE_DEPTH'] # this is a heroku measure
             http_entry_time = entry_time.to_f / 1e3
-            _record_heroku_queue_depth(queue_depth)
           else # apache / nginx
             apache_parsed_time = entry_time[/t=(\d+)/, 1]
             http_entry_time = apache_parsed_time.to_f/1e6 if apache_parsed_time
@@ -372,15 +392,11 @@ module NewRelic::Agent::Instrumentation
       http_entry_time || now
     end
 
-    def _record_heroku_queue_depth(header)
-      length_stat = NewRelic::Agent.agent.stats_engine.get_stats_no_scope('Mongrel/Queue Length')
-      length_stat.trace_call(header.to_i)
-    end
-    
     def _dispatch_stat
       NewRelic::Agent.agent.stats_engine.get_stats_no_scope 'HttpDispatcher'  
     end
     
-    
   end 
 end  
+end
+end

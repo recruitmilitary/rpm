@@ -1,19 +1,71 @@
-v2.10.2.3
+v2.11.1
+  * republished gem without generated rdocs
+
+v2.11.0
+  * rails3 instrumentation (no developer mode support yet)
+  * removed the ensure_worker_thread started and instead defined an after_fork
+    handler that will set up the agent properly in forked processes.
+  * change at_exit handler so the shutdown always goes after other shutdown 
+    handlers
+  * add visibility to active record db transactions in the rpm transaction
+    traces (thanks to jeremy kemper)
+  * fix regression in merb support which caused merb apps not to start
+  * added NewRelic::Agent.logger to the public api to write to the agent 
+    log file.
+  * optimizations to background thread, controller instrumentation, memory
+    usage
+  * add logger method to public_api
+  * support list notation for ignored exceptions in the newrelic.yml
+    
+v2.10.8
+  * fix bug in delayed_job instrumentation that caused the job queue sampler
+    to run in the wrong place
+  * change startup sequence and code that restarts the worker loop
+    thread
+  * detect the unicorn master and dont start the agent; hook in after_fork
+  * fix problem with the Authlogic metric names which caused errors in
+    developer mode.  Authlogic metrics now adhere to the convention of
+    prefixing the name with  'Custom'
+  * allow more correct overriding of transaction trace settings in the 
+    call to #manual_start
+  * simplify WorkerLoop and add better protection for concurrency
+  * preliminary support for rails3
+    
+v2.10.6
+  * fix missing URL and referer on some traced errors and transactions
+  * gather traced errors *after* executing the rescue chain in ActionController
+  * always load controller instrumentation
+  * pick up token validation from newrelic.yml
+  
+v2.10.5
+  * fix bug in delayed_job instrumentation occurring when there was no DJ log
+  
+v2.10.4
+  * fix incompatibility with Capistrano 2.5.16
+  * strip down URLs reported in transactions and errors to path only
+  
+v2.10.3
+  * optimization to reduce overhead: move background samplers into foreground thread
+  * change default config file to ignore RoutingErrors
   * moved the background task instrumentation into a separate tab in the RPM UI
   * allow override of the RPM application name via NEWRELIC_APP_NAME environment variable
   * revised Delayed::Job instrumentation so no manual_start is required 
   * send buffered data on shutdown
   * expanded support for queue length and queue time
   * remove calls to starts_with to fix Sinatra and non-rails deployments
-  * fix problem with apdex recording
+  * fix problem with apdex scores recording too low in some circumstances
   * switch to jeweler for gem building
   * minor fixes, test improvements, doc and rakefile improvements
-v2.10.2.1.
+  * fix incompatibility with Hoptoad where Hoptoad was not getting errors handled by New Relic
+  * many other optimizations, bug fixes and documentation improvements
+
+v2.10.2.
+  * beta release of 2.10
   * fix bugs with Sinatra app instrumentation 
   * minor doc updates
-v2.10.2.0.
-  * beta release of 2.10
+  
 v2.10.1.
+  * alpha release of 2.10
   * rack support, including metal; ignores 404s; requires a module inclusion (see docs)
   * sinatra support, displays actions named by the URI pattern matched
   * add API method to abort transaction recording for in-flight transactions
@@ -46,8 +98,10 @@ v2.10.1.
   * added # of GC calls to GC instrumentation
   * renamed the dispatcher metric
   * refactored stats_engine code for readability
+  * optimization: reduce wakeup times for harvest thread
   
 v2.10.0.
+  * alpha release of 2.10
   * support unicorn
   * instrumentation of GC for REE and MRE with GC patch
   * support agent restarting when changes are made to the account

@@ -1,5 +1,6 @@
 require 'new_relic/control'
-module NewRelic::Agent
+module NewRelic
+module Agent
   # This module contains class methods added to support installing custom
   # metric tracers and executing for individual metrics.
   #
@@ -22,12 +23,12 @@ module NewRelic::Agent
   # To instrument a class method:
   #
   #     require 'new_relic/agent/method_tracer'
-  #     class A
-  #       extend NewRelic::Agent::MethodTracer
+  #     class An
   #       def self.process
   #         ...
   #       end
   #       class << self
+  #         include NewRelic::Agent::MethodTracer
   #         add_method_tracer :process
   #       end
   #     end
@@ -93,7 +94,7 @@ module NewRelic::Agent
       alias trace_method_execution_no_scope trace_execution_unscoped #:nodoc:
       
       # Trace a given block with stats and keep track of the caller.  
-      # See #add_method_tracer for a description of the arguments.
+      # See NewRelic::Agent::MethodTracer::ClassMethods#add_method_tracer for a description of the arguments.
       # +metric_names+ is either a single name or an array of metric names.
       # If more than one metric is passed, the +produce_metric+ option only applies to the first.  The
       # others are always recorded.  Only the first metric is pushed onto the scope stack.
@@ -345,4 +346,5 @@ module NewRelic::Agent
       end
     end
   end
+end
 end

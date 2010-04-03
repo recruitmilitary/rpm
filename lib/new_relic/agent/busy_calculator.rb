@@ -4,8 +4,11 @@
 # span the minute boundaries.  This module manages accounting of requests not yet
 # completed. 
 #
-# Calls are re-entrant.  All start calls must be paired with finish calls, or a reset call.
-module NewRelic::Agent::BusyCalculator
+# Calls are re-entrant.  All start calls must be paired with finish
+# calls, or a reset call.
+module NewRelic
+  module Agent
+    module BusyCalculator
   
   extend self
   
@@ -27,7 +30,7 @@ module NewRelic::Agent::BusyCalculator
     return if callers > 0
     @lock.synchronize do
       if @entrypoint_stack.empty?
-        NewRelic::Control.instance.log.error("Stack underflow tracking dispatcher entry and exit!\n  #{caller.join("  \n")}") 
+        NewRelic::Agent.logger.error("Stack underflow tracking dispatcher entry and exit!\n  #{caller.join("  \n")}") 
       else
         @accumulator += (end_time - @entrypoint_stack.pop)
       end
@@ -83,4 +86,6 @@ module NewRelic::Agent::BusyCalculator
     NewRelic::Agent.agent.stats_engine.get_stats_no_scope 'Instance/Busy'  
   end
   
+end
+end
 end
