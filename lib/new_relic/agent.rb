@@ -79,7 +79,6 @@ module NewRelic
     require 'new_relic/version'
     require 'new_relic/local_environment'
     require 'new_relic/stats'
-    require 'new_relic/delayed_job_injection'
     require 'new_relic/metrics'
     require 'new_relic/metric_spec'
     require 'new_relic/metric_data'
@@ -191,10 +190,6 @@ module NewRelic
     # Register this method as a callback for processes that fork
     # jobs.  
     #
-    # Pass <tt>:force_reconnect => true</tt> to force the agent to
-    # reconnect to the server and start a worker loop for sending
-    # data.
-    #
     # If the master/parent connects to the agent prior to forking the
     # agent in the forked process will use that agent_run.  Otherwise
     # the forked process will establish a new connection with the
@@ -205,6 +200,15 @@ module NewRelic
     # that forks worker processes then you will need to force the
     # agent to reconnect, which it won't do by default.  Passenger and
     # Unicorn are already handled, nothing special needed for them.
+    #
+    # Options:
+    # * <tt>:force_reconnect => true</tt> to force the spawned process to 
+    #   establish a new connection, such as when forking a long running process.
+    #   The default is false--it will only connect to the server if the parent
+    #   had not connected.
+    # * <tt>:keep_retrying => false</tt> if we try to initiate a new 
+    #   connection, this tells me to only try it once so this method returns
+    #   quickly if there is some kind of latency with the server.
     def after_fork(options={})
       agent.after_fork(options)
     end
@@ -321,7 +325,8 @@ module NewRelic
     # Record the given error in RPM.  It will be passed through the
     # #ignore_error_filter if there is one.
     # 
-    # * <tt>exception</tt> is the exception which will be recorded
+    # * <tt>exception</tt> is the exception which will be recorded.  May also be
+    #   an error message.
     # Options:
     # * <tt>:uri</tt> => The request path, minus any request params or query string.
     # * <tt>:referer</tt> => The URI of the referer
@@ -329,7 +334,7 @@ module NewRelic
     # * <tt>:request_params</tt> => Request parameters, already filtered if necessary
     # * <tt>:custom_params</tt> => Custom parameters
     #
-    # Anything left over is treated as custom params
+    # Anything left over is treated as custom params.
     #
     def notice_error(exception, options={})
       NewRelic::Agent::Instrumentation::MetricFrame.notice_error(exception, options)

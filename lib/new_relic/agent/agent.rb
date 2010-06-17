@@ -53,7 +53,15 @@ module NewRelic
     # * Restarts the sampler thread if necessary
     # * Initiates a new agent run and worker loop unless that was done
     #   in the parent process and +:force_reconnect+ is not true
-    #
+    # 
+    # Options:
+    # * <tt>:force_reconnect => true</tt> to force the spawned process to 
+    #   establish a new connection, such as when forking a long running process.
+    #   The default is false--it will only connect to the server if the parent
+    #   had not connected.
+    # * <tt>:keep_retrying => false</tt> if we try to initiate a new 
+    #   connection, this tells me to only try it once so this method returns
+    #   quickly if there is some kind of latency with the server.
     def after_fork(options={})
       
       # @connected gets false after we fail to connect or have an error
@@ -66,11 +74,12 @@ module NewRelic
                 @connected == false or
                 @worker_thread && @worker_thread.alive?
 
-      log.debug "Detected that the worker thread is not running in #$$.  Restarting."
+      log.info "Starting the worker thread in #$$ after forking."
 
       # Clear out stats that are left over from parent process
       reset_stats
-      start_worker_thread(options[:force_reconnect])
+      
+      start_worker_thread(options)
       @stats_engine.start_sampler_thread
     end
     
@@ -154,7 +163,7 @@ module NewRelic
     
     # Start up the agent.  This verifies that the agent_enabled? is
     # true and initializes the sampler based on the current
-    # controluration settings.  Then it will fire up the background
+    # configuration settings.  Then it will fire up the background
     # thread for sending data to the server if applicable.
     def start
       if started?
@@ -197,27 +206,31 @@ module NewRelic
       # Initialize transaction sampler
       @transaction_sampler.random_sampling = @random_sample
 
-      if control.monitor_mode?
-        if !control.license_key
-          control.log! "No license key found.  Please edit your newrelic.yml file and insert your license key.", :error
-        elsif  control.license_key.length != 40
-          control.log! "Invalid license key: #{control.license_key}", :error
-        else     
-          # Do the connect in the foreground if we are in sync mode
-          NewRelic::Agent.disable_all_tracing { connect(false) } if control.sync_startup
-          
-          # Start the event loop and initiate connection if necessary
-          start_worker_thread
-
-          # Our shutdown handler needs to run after other shutdown handlers
-          # that may be doing things like running the app (hello sinatra).  
-          if RUBY_VERSION =~ /rubinius/i 
-            list = at_exit { shutdown }
-            # move the shutdown handler to the front of the list, to execute last:
-            list.unshift(list.pop)
-          elsif !defined?(JRuby) or !defined(Sinatra::Application)
-            at_exit { at_exit { shutdown } } 
-          end
+      case
+      when !control.monitor_mode?
+        log.warn "Agent configured not to send data in this environment - edit newrelic.yml to change this"
+      when !control.license_key
+        log.error "No license key found.  Please edit your newrelic.yml file and insert your license key."
+      when control.license_key.length != 40
+        log.error "Invalid license key: #{control.license_key}"
+      when [:passenger, :unicorn].include?(control.dispatcher)  
+        log.info "Connecting workers after forking."
+      else
+        # Do the connect in the foreground if we are in sync mode
+        NewRelic::Agent.disable_all_tracing { connect(:keep_retrying => false) } if control.sync_startup
+        
+        # Start the event loop and initiate connection if necessary
+        start_worker_thread
+        
+        # Our shutdown handler needs to run after other shutdown handlers
+        # that may be doing things like running the app (hello sinatra).
+        if RUBY_VERSION =~ /rubinius/i 
+          list = at_exit { shutdown }
+          # move the shutdown handler to the front of the list, to
+          # execute last:
+          list.unshift(list.pop)
+        elsif !defined?(JRuby) or !defined?(Sinatra::Application)
+          at_exit { at_exit { shutdown } } 
         end
       end
       control.log! "New Relic RPM Agent #{NewRelic::VERSION::STRING} Initialized: pid = #$$"
@@ -240,8 +253,10 @@ module NewRelic
       @collector ||= control.server
     end
     
-    # Try to launch the worker thread and connect to the server
-    def start_worker_thread(force_reconnect=false)
+    # Try to launch the worker thread and connect to the server.
+    # 
+    # See #connect for a description of connection_options.
+    def start_worker_thread(connection_options = {})
       log.debug "Creating RPM worker thread."
       @worker_thread = Thread.new do
         begin
@@ -250,7 +265,7 @@ module NewRelic
             # the server rejected us for a licensing reason and we should 
             # just exit the thread.  If it returns nil
             # that means it didn't try to connect because we're in the master.
-            connect if !@connected or force_reconnect
+            connect(connection_options)
             if @connected
               # disable transaction sampling if disabled by the server and we're not in dev mode
               if !control.developer_mode? && !@should_send_samples
@@ -327,8 +342,20 @@ module NewRelic
     # Set keep_retrying=false to disable retrying and return asap, such as when
     # invoked in the foreground.  Otherwise this runs until a successful
     # connection is made, or the server rejects us.
-    
-    def connect(keep_retrying = true)
+    #
+    # * <tt>:keep_retrying => false</tt> to only try to connect once, and
+    #   return with the connection set to nil.  This ensures we may try again
+    #   later (default true).
+    # * <tt>force_reconnect => true</tt> if you want to establish a new connection
+    #   to the server before running the worker loop.  This means you get a separate
+    #   agent run and RPM sees it as a separate instance (default is false).  
+    def connect(options)
+      # Don't proceed if we already connected (@connected=true) or if we tried
+      # to connect and were rejected with prejudice because of a license issue
+      # (@connected=false).
+      return if !@connected.nil? && !options[:force_reconnect]
+      
+      keep_retrying = options[:keep_retrying].nil? || options[:keep_retrying]
       
       # wait a few seconds for the web server to boot, necessary in development
       connect_retry_period = keep_retrying ? 10 : 0
@@ -336,14 +363,6 @@ module NewRelic
       @agent_id = nil
       begin
         sleep connect_retry_period.to_i
-        # Running in the Passenger or Unicorn spawners?
-        if $0 =~ /ApplicationSpawner|unicorn.* master/
-          log.debug "Process is master spawner (#$0) -- don't connect to RPM service"
-          @connected = nil
-          return 
-        else 
-          log.debug "Connecting Process to RPM: #$0"
-        end
         environment = control['send_environment_info'] != false ? control.local_env.snapshot : []
         log.debug "Connecting with validation seed/token: #{control.validate_seed}/#{control.validate_token}" if control.validate_seed
         @agent_id ||= invoke_remote :start, @local_host, {
@@ -526,7 +545,7 @@ module NewRelic
       dump_size = dump.size
       
       # small payloads don't need compression      
-      return [dump, 'identity'] if dump_size < 2000
+      return [dump, 'identity'] if dump_size < (64*1024)
       
       # medium payloads get fast compression, to save CPU
       # big payloads get all the compression possible, to stay under
@@ -544,7 +563,7 @@ module NewRelic
     end
 
     def send_request(opts)
-      request = Net::HTTP::Post.new(opts[:uri], 'CONTENT-ENCODING' => opts[:encoding], 'ACCEPT-ENCODING' => 'gzip', 'HOST' => opts[:collector].name)
+      request = Net::HTTP::Post.new(opts[:uri], 'CONTENT-ENCODING' => opts[:encoding], 'HOST' => opts[:collector].name)
       request.content_type = "application/octet-stream"
       request.body = opts[:data]
       

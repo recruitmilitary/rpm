@@ -71,12 +71,17 @@ module NewRelic
     # in a mode where tracers are not installed then we should not start the agent.
     #
     # Subclasses are not allowed to override, but must implement init_config({}) which
-    # is called at most once.
+    # is called one or more times.
     #
     def init_plugin(options={})
       options['app_name'] = ENV['NEWRELIC_APP_NAME'] if ENV['NEWRELIC_APP_NAME']
  
       require 'new_relic/agent'
+      
+      # Load the DJ injection now.  If you do it sooner, DJ might not be loaded and
+      # you'll miss it.
+      require 'new_relic/delayed_job_injection'
+      
       # Merge the stringified options into the config as overrides:
       logger_override = options.delete(:log)
       environment_name = options.delete(:env) and self.env = environment_name
@@ -232,7 +237,7 @@ module NewRelic
       #this can only be on when SSL is enabled
       @verify_certificate ||= ( use_ssl? ? fetch('verify_certificate', false) : false)
     end
-    
+
     def server
       @remote_server ||= server_from_host(nil)  
     end
@@ -405,7 +410,7 @@ module NewRelic
     
     # Control subclasses may override this, but it can be called multiple times.
     def setup_log
-      @log_file = "#{log_path}/newrelic_agent.log"
+      @log_file = "#{log_path}/#{log_file_name}"
       @log = Logger.new @log_file
       
       # change the format just for our logger
@@ -435,11 +440,17 @@ module NewRelic
     end
     
     def log_path
-      path = File.join(root,'log')
-      unless File.directory? path
-        path = '.'
-      end
-      File.expand_path(path)
+      @log_path ||= begin
+                      path = self['log_file_path'] || File.join(root,'log')
+                      unless File.directory? path
+                        path = '.'
+                      end
+                      File.expand_path(path)
+                    end
+    end
+
+    def log_file_name
+      @log_file_name ||= fetch('log_file_name', 'newrelic_agent.log')
     end
     
     # Create the concrete class for environment specific behavior:

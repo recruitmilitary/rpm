@@ -1,3 +1,28 @@
+v2.12.3
+  * fix regression in startup sequence
+
+v2.12.2
+  * fix for regression in Rails 2.1 inline rendering
+  * workaround bug found in some rubies that caused a segv and/or NoMemoryError
+    when deflating content for upload
+  * avoid creating connection thread in unicorn/passenger spawners
+
+v2.12.1
+  * fix bug in profile mode
+  * fix race condition in Delayed::Job instrumentation loading
+  * fix glassfish detection in latest glassfish gem
+
+v2.12.0
+  * support basic instrumentation for ActsAsSolr and Sunspot
+
+v2.11.3
+  * fix bug in startup when running JRuby
+
+v2.11.2
+  * fix for unicorn not reporting when the proc line had 'master' in it
+  * fix regression for passenger 2.0 and earlier
+  * fix after_fork in the shim
+
 v2.11.1
   * republished gem without generated rdocs
 
