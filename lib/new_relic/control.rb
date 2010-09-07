@@ -432,7 +432,7 @@ module NewRelic
     end
     
     def to_stdout(msg)
-      STDOUT.puts "** [NewRelic] " + msg 
+      # shut the fuck up
     end
     
     def config_file
